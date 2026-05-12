@@ -45,6 +45,22 @@ Then open LuCI → **Network → WiFi Manager**.
 
 ---
 
+## Screenshots
+
+| Networks | Radios |
+|----------|--------|
+| ![Networks tab](screenshots/networks-tab.png) | ![Radios tab](screenshots/radios-tab.png) |
+
+| Clients | Diagnostics |
+|---------|-------------|
+| ![Clients tab](screenshots/clients-tab.png) | ![Diagnostics tab](screenshots/diagnostics-tab.png) |
+
+| MLO Wizard | Station Wizard | WDS / Bridge Wizard |
+|------------|----------------|---------------------|
+| ![wizardMLO](screenshots/wizard-mlo.png) | ![wizardStation](screenshots/wizard-station.png) | ![wizardWDS](screenshots/wizard-wds.png) |
+
+---
+
 ## Features
 
 ### Wizards — guided network setup
