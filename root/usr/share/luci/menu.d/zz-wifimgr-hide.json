@@ -1,0 +1,17 @@
+{
+    "admin/network/wireless": {
+        "depends": {
+            "fs": { "/nonexistent": "executable" }
+        }
+    },
+    "admin/status/channel_analysis": {
+        "depends": {
+            "fs": { "/nonexistent": "executable" }
+        }
+    },
+    "admin/status/realtime/wireless": {
+        "depends": {
+            "fs": { "/nonexistent": "executable" }
+        }
+    }
+}

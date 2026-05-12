@@ -1,0 +1,19 @@
+#!/bin/sh
+
+# Set country to CZ on all radios
+uci set wireless.radio0.country='CZ'
+uci set wireless.radio1.country='CZ'
+uci set wireless.radio2.country='CZ'
+
+# Set default password + encryption and rename MT76_AP_MLD on all wifi interfaces
+for iface in $(uci show wireless | grep '=wifi-iface' | cut -d'.' -f2 | cut -d'=' -f1); do
+    uci set wireless.${iface}.key='12345678'
+    # radio2 (6G standalone) requires sae-only; MLO and 2G/5G use sae-mixed
+    radio=$(uci -q get wireless.${iface}.device)
+    [ "$radio" = 'radio2' ] && enc='sae' || enc='sae-mixed'
+    uci set wireless.${iface}.encryption="$enc"
+    ssid=$(uci -q get wireless.${iface}.ssid)
+    [ "$ssid" = 'MT76_AP_MLD' ] && uci set wireless.${iface}.ssid='OpenWrt-MLD'
+done
+
+uci commit wireless

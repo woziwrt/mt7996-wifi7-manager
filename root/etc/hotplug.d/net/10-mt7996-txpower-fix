@@ -1,0 +1,30 @@
+#!/bin/sh
+# Cold-boot TX power fix for MT7996 (BPI-R4).
+# band0 and band2: driver sets phy->txpower=20 at probe; mac80211 skips
+# BSS_CHANGED_TXPOWER because info->txpower == phy->txpower → TMAC stays 0 → 3 dBm.
+# Fix: nudge txpower to 19 dBm (mismatch triggers MCU call), then restore.
+# Trigger: phy0.0-ap0 (band0 AP iface) coming up — guarantees phy0 is ready.
+
+[ "$ACTION" = "add" ] || exit 0
+[ "$INTERFACE" = "phy0.0-ap0" ] || exit 0
+
+_restore() {
+    local radio=$1
+    local txpower
+    txpower=$(uci -q get wireless.radio${radio}.txpower)
+    iw phy phy0 set txpower fixed 1900 radio ${radio}
+    sleep 1
+    if [ -n "$txpower" ]; then
+        iw phy phy0 set txpower fixed ${txpower}00 radio ${radio}
+    else
+        iw phy phy0 set txpower auto radio ${radio}
+    fi
+}
+
+(
+    while [ "$(cat /sys/kernel/debug/ieee80211/phy0/mt76/sku_disable 2>/dev/null)" != "0" ]; do
+        sleep 1
+    done
+    _restore 0
+    _restore 2
+) &
