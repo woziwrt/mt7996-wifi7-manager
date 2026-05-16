@@ -166,6 +166,8 @@ All hardware write operations are serialized through an `hwBusy` mutex in layer1
 | 6 GHz STA (non-MLO) | MT7996 driver limitation — see above. |
 | Multiple MLO AP groups | Single chip (one wiphy) — only one MLO group per router. |
 | Repeater where STA and local AP share the same radio | Wizard blocks this. |
+| WDS or relayd uplink on a radio that is part of an MLO group | Driver cannot run an MLO STA link and a standalone STA (WDS/relayd) on the same radio simultaneously. Wizard blocks this. |
+| Two MLO STA connections simultaneously | Only one MLO STA per router — same 3 radios, same wpa_supplicant instance. Wizard blocks this. |
 
 ---
 
