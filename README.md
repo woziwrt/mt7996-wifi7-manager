@@ -116,23 +116,56 @@ All hardware write operations are serialized through an `hwBusy` mutex in layer1
 
 ---
 
-## Supported network combinations
+## Network reference
 
-The BPI-R4 has three radios (radio0 = 2.4 GHz, radio1 = 5 GHz, radio2 = 6 GHz) all on a single MT7996 chip. Supported combinations per router:
+### Per-radio capabilities
 
-| Combination | Supported | Notes |
-|-------------|-----------|-------|
-| MLO AP (2+3 bands) | ✅ | Default setup. Requires reboot to apply. |
-| MLO AP + legacy AP per radio | ✅ | Max 1 additional AP per MLO radio. Requires reboot. |
-| Multiple legacy APs (no MLO) | ✅ | Standard MBSSID, wifi reload OK. |
-| STA uplink on 2.4G or 5G | ✅ | Coexists with AP on same radio. |
-| MLO STA (multi-band client) | ✅ | Connects to upstream MLO AP on all three bands. |
-| Repeater (STA + local AP) | ✅ | STA and AP **must be on different radios**. L3 NAT. |
-| WDS bridge | ✅ | 4-address mode on radio0 or radio1. |
-| L2 relayd (ARP proxy) | ✅ | STA on radio0 or radio1 only. |
-| STA uplink on 6G (non-MLO) | ❌ | Driver limitation — see below. |
-| MLO AP + MLO STA simultaneously | ❌ | Same radios cannot be both AP-MLD and STA-MLD. |
-| Repeater with same radio for STA and AP | ❌ | Blocked by wizard. |
+| Capability | 2.4 GHz (radio0) | 5 GHz (radio1) | 6 GHz (radio2) |
+|-----------|:----------------:|:--------------:|:--------------:|
+| Access Point (AP) | ✅ | ✅ | ✅ |
+| STA / WDS / Relayd uplink | ✅ | ✅ | ❌ ¹ |
+| AP + uplink on the same radio | ✅ | ✅ | ❌ |
+| Part of MLO AP group | ✅ | ✅ | ✅ |
+| Part of MLO STA | ✅ | ✅ | ✅ |
+| Max simultaneous APs — no MLO AP active | ~4 via `wifi reload` | ~4 via `wifi reload` | ~4 via `wifi reload` |
+| Max simultaneous APs — radio is in MLO AP group | **1 extra** ² | **1 extra** ² | **1 extra** ² |
+
+> ¹ 6 GHz STA (non-MLO) is not supported. The MT7996 driver always routes band2 through the MLD code path — a standalone 6 GHz scan returns no results. 6 GHz uplink is only possible via MLO STA.  
+> ² Adding a second extra AP to an MLO radio via `wifi reload` triggers an EDCCA crash in the MT7996 driver. The wizard enforces this limit and always reboots (never reloads) when adding an AP to an MLO radio.
+
+---
+
+### Network combinations — what works and what doesn't
+
+| Combination | Max per router | Notes |
+|-------------|:--------------:|-------|
+| **MLO AP** (WiFi 7, 2 or 3 bands) | 1 | Requires reboot. Default setup. |
+| MLO AP + legacy AP on each MLO radio | 1 per MLO radio | Each slot requires reboot. Wizard enforces the limit. |
+| MLO AP + STA uplink | 1 STA | radio0 or radio1. `wifi reload` OK — STA doesn't count toward AP limit. |
+| MLO AP + WDS bridge | 1 WDS | radio0 or radio1. 4-address STA mode — does not trigger EDCCA. |
+| MLO AP + L2 relayd | 1 | radio0 or radio1. Same reason — STA mode only. |
+| **Legacy APs only** (no MLO) | ~4 per radio | `wifi reload` OK for each addition. No EDCCA risk. |
+| Legacy AP + STA uplink on same radio | 1 STA per radio | radio0 or radio1 only. |
+| Legacy AP + STA uplink on different radio | 1 STA | Fine. |
+| Legacy AP + WDS bridge | 1 WDS | radio0 or radio1. |
+| Legacy AP + L2 relayd | 1 | radio0 or radio1. |
+| **MLO STA** (WiFi 7 uplink, all 3 bands) | 1 | Connects to an upstream MLO AP. |
+| MLO STA + legacy APs | ~4 per radio | No EDCCA limit — MLO STA is not an AP, does not use MBSSID. |
+| MLO STA + STA uplink | ❌ | Cannot run two uplink sessions simultaneously. |
+| **Repeater** (L3 NAT) | 1 | STA on one radio + local AP on a **different** radio. |
+| Repeater + existing APs | ✅ | Local AP radio must not be at its MLO limit. |
+| **WDS bridge** | 1 | radio0 or radio1. 4-address mode. |
+| **L2 relayd** | 1 | radio0 or radio1. ARP proxy — clients get upstream IP. |
+
+#### Not supported
+
+| Combination | Reason |
+|-------------|--------|
+| MLO AP + MLO STA | Same 3 radios cannot be AP-MLD and STA-MLD simultaneously. |
+| MLO AP + 2 or more extra APs on the same radio | EDCCA driver crash. Wizard blocks this. |
+| 6 GHz STA (non-MLO) | MT7996 driver limitation — see above. |
+| Multiple MLO AP groups | Single chip (one wiphy) — only one MLO group per router. |
+| Repeater where STA and local AP share the same radio | Wizard blocks this. |
 
 ---
 
