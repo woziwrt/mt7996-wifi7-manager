@@ -88,6 +88,10 @@ Per-radio configuration (channel, bandwidth, country) and TX power management:
 | **eFuse max** | Driver runs at hardware eFuse maximum. Requires reboot. |
 | **Manual** | Per-radio dBm cap. `sku_idx=0` + `txpower=N`. |
 
+**Channel advisor** — "Scan channels" button per radio. Scans nearby APs and survey noise, scores interference, recommends top 3 channels as color-coded buttons. Click to apply.
+
+**Preamble puncturing** — per-radio subchannel exclusion (EHT). Visual 20 MHz bitmap — click to puncture/restore individual subchannels for DFS coexistence.
+
 ### Clients tab
 
 Live client list showing signal (color-coded), WiFi generation badge (WiFi 4/5/6/7), bitrate, and per-link data for MLO clients. Disconnect button.
@@ -95,6 +99,8 @@ Live client list showing signal (color-coded), WiFi generation badge (WiFi 4/5/6
 ### Diagnostics tab
 
 Firmware version, CPU and WiFi chip temperatures, per-radio channel utilization / noise / TX stats, MLO internals (MLD address, active links, EMLSR/STR status), and log download.
+
+**Wireless backup / restore** — download current `/etc/config/wireless` as a backup file. Upload to restore after sysupgrade.
 
 ---
 
@@ -229,6 +235,8 @@ Not compatible with mainline OpenWrt due to differences in interface naming (`ap
 - **EDCCA crash prevention in wizardAP** — Radios that are part of an MLO group and already have one legacy AP are disabled in the selector ("— at limit") and show a blocking error. Prevents a class of MT7996 driver crash that requires 15+ minutes of power-off to recover from.
 - **EDCCA crash prevention in wizardMLO** — Link toggle buttons for radios already in an existing MLO group are disabled. Shows blocking error if fewer than 2 radios are available.
 - **MLO radio always reboots** — wizard_ap() detects if the target radio is part of an MLO group and triggers a reboot instead of `wifi reload`, eliminating the risk of EDCCA crash even if the UI guard is bypassed.
+- **MLO conflict blocking in wizardStation** — MLO STA mode is blocked if a local MLO AP or another MLO STA is already active on the same radios.
+- **MLO conflict blocking in wizardWDS / wizardRepeater** — Radios that are part of any MLO group (AP or STA) are disabled as uplink options. The driver cannot run an MLO link and a standalone STA (WDS/relayd) on the same radio simultaneously.
 
 **Bug fixes**
 

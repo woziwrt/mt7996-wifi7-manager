@@ -165,8 +165,11 @@ async function radio_get_all() {
         const hRes = await layer1.hostapd_stat(legacyIf, null);
         const h    = hRes.ok ? hRes.data : {};
 
-        // txpower_actual: iw dev (real HW value) → hostapd max_txpower fallback
-        const txActual = iwTxpower[legacyIf] ?? (h.max_txpower ? parseInt(h.max_txpower) : null);
+        // txpower_actual: manual mode → UCI value (configured cap); otherwise iw dev → hostapd max_txpower fallback
+        const txMode = sec.txpower_mode || (sec.sku_idx === undefined ? 'efuse_max' : (sec.txpower !== undefined ? 'manual' : 'regdb'));
+        const txActual = (txMode === 'manual' && sec.txpower !== undefined)
+            ? uciInt(sec.txpower)
+            : (iwTxpower[legacyIf] ?? (h.max_txpower ? parseInt(h.max_txpower) : null));
 
         radios.push({
             id,
@@ -179,7 +182,7 @@ async function radio_get_all() {
             noscan:           uciBool(sec.noscan),
             background_radar: uciBool(sec.background_radar),
             txpower_uci:      sec.txpower !== undefined ? uciInt(sec.txpower) : null,
-            txpower_mode:     sec.txpower_mode || (sec.txpower !== undefined ? 'manual' : 'regdb'),
+            txpower_mode:     sec.txpower_mode || (sec.sku_idx === undefined ? 'efuse_max' : (sec.txpower !== undefined ? 'manual' : 'regdb')),
             lpi_psd:          sec.lpi_psd          !== undefined ? uciBool(sec.lpi_psd)          : null,
             lpi_bcn_enhance:  sec.lpi_bcn_enhance  !== undefined ? uciBool(sec.lpi_bcn_enhance)  : null,
             lpi_sku_idx:      sec.lpi_sku_idx      !== undefined ? uciInt(sec.lpi_sku_idx)        : null,
@@ -187,6 +190,8 @@ async function radio_get_all() {
             legacy_rates:     sec.legacy_rates     !== undefined ? uciBool(sec.legacy_rates)     : null,
             sr_enable:        sec.sr_enable        !== undefined ? uciBool(sec.sr_enable)        : null,
             etxbfen:          sec.etxbfen          !== undefined ? uciBool(sec.etxbfen)          : null,
+            pp_mode:          sec.pp_mode          !== undefined ? uciInt(sec.pp_mode)           : 0,
+            pp_bitmap:        sec.pp_bitmap        !== undefined ? uciInt(sec.pp_bitmap)          : 0,
             up:               ubusData[id] ? ubusData[id].up === true : false,
             freq:             h.freq          ? parseInt(h.freq)            : null,
             chan_util:        h.chan_util_avg !== undefined ? (parseInt(h.chan_util_avg) <= 100 ? parseInt(h.chan_util_avg) : null) : null,
@@ -332,8 +337,9 @@ async function iface_get_all() {
         const ifname = ubusMap[sid] || null;
 
         // Runtime status from hostapd or wpa_cli
-        let status = 'DISABLED';
-        if (ifname) {
+        const disabled = sec.disabled === '1';
+        let status = disabled ? 'DISABLED' : (!ifname ? 'INIT_FAILED' : 'DISABLED');
+        if (ifname && !disabled) {
             if (mode === 'ap') {
                 const hRes = await layer1.hostapd_stat(ifname, null);
                 if (hRes.ok && hRes.data.state) status = hRes.data.state;
@@ -341,6 +347,8 @@ async function iface_get_all() {
                 const wpRes = await layer1.wpa_status(ifname);
                 if (wpRes.ok && wpRes.data.wpa_state)
                     status = wpRes.data.wpa_state === 'COMPLETED' ? 'ENABLED' : wpRes.data.wpa_state;
+                else
+                    status = 'DISCONNECTED';
             }
         }
 
@@ -553,11 +561,18 @@ async function mld_get_all() {
         const radios  = toArray(sec.device);
         const isSta   = sec.mode === 'sta';
 
-        // MLD-level stat (AP only — STA uses wpa_supplicant, not hostapd)
-        let statData = {};
+        // MLD-level stat + IP (AP only — STA uses wpa_supplicant, not hostapd)
+        let statData = {}, ip_address = null;
         if (ifname && !isSta) {
-            const hRes = await layer1.hostapd_stat(ifname, null);
+            const [hRes, netRes] = await Promise.all([
+                layer1.hostapd_stat(ifname, null),
+                layer1.ubus_network_interface(sec.network || 'lan')
+            ]);
             if (hRes.ok) statData = hRes.data;
+            if (netRes.ok) {
+                const addrs = netRes.data['ipv4-address'] || netRes.data.ipv4_address || [];
+                if (addrs.length) ip_address = addrs[0].address || null;
+            }
         }
 
         let links = [];
@@ -606,7 +621,7 @@ async function mld_get_all() {
                     channel:    ld.channel          ? parseInt(ld.channel)           : null,
                     bw_mhz:     bwMhz,
                     txpower:    txp,
-                    chan_util:  ld.chan_util_avg     !== undefined ? parseInt(ld.chan_util_avg)   : null,
+                    chan_util:  ld.chan_util_avg !== undefined ? (parseInt(ld.chan_util_avg) <= 100 ? parseInt(ld.chan_util_avg) : null) : null,
                     dfs_active: ld.dfs_active       ? uciBool(ld.dfs_active)        : false,
                     bssid:      ld['bssid[0]'] || ld.bssid || null
                 });
@@ -621,6 +636,7 @@ async function mld_get_all() {
             encryption:         sec.encryption         || 'none',
             key:                sec.key                || null,
             network:            sec.network            || null,
+            ip_address,
             isolate:            uciBool(sec.isolate),
             mld_addr:           statData['mld_addr[0]'] || sec.mld_addr || null,
             mld_allowed_links:  sec.mld_allowed_phy_bitmap !== undefined ? uciInt(sec.mld_allowed_phy_bitmap) :
@@ -847,6 +863,13 @@ async function uplink_get_all() {
         const wp      = wpRes.ok   ? wpRes.data  : {};
         const linkRaw = linkRes.ok ? linkRes.data.raw : '';
 
+        // MLO STA: wpa_cli status lacks ap_mld_addr — fetch it from bss entry
+        let ap_mld_addr = wp.ap_mld_addr || null;
+        if (is_mlo && !ap_mld_addr && wp.bssid) {
+            const bssRes = await layer1.wpa_bss(ifname, wp.bssid);
+            if (bssRes.ok) ap_mld_addr = bssRes.data.ap_mld_addr || null;
+        }
+
         // Signal: per-link value preferred over aggregate
         let signal = null;
         if (dumpRes.ok && dumpRes.data.length) {
@@ -859,7 +882,7 @@ async function uplink_get_all() {
         // IP address: wpa_status first, then ubus network interface
         let ip = wp.ip_address || null;
         if (!ip && netRes.ok) {
-            const addrs = netRes.data.ipv4_address || [];
+            const addrs = netRes.data['ipv4-address'] || netRes.data.ipv4_address || [];
             if (addrs.length) ip = addrs[0].address || null;
         }
 
@@ -891,7 +914,7 @@ async function uplink_get_all() {
             is_mlo,
             ssid:           wp.ssid       || sec.ssid  || null,
             bssid:          wp.bssid      || null,
-            ap_mld_addr:    is_mlo ? (wp.ap_mld_addr || null) : null,
+            ap_mld_addr:    is_mlo ? ap_mld_addr : null,
             wpa_state:      wp.wpa_state  || 'DISCONNECTED',
             wifi_generation: wp.wifi_generation ? parseInt(wp.wifi_generation) : null,
             signal,
@@ -925,26 +948,60 @@ function buildStaIfaceMap(iwData) {
     return map;
 }
 
-// Parse per-link BSSID/freq from "iw dev sta-mld0 link" raw output
+// Parse per-link BSSID/freq from "iw dev sta-mld0 link" raw output.
+// Handles both multi-link format ("Link N BSSID xx") and single-link format ("Connected to xx").
 function parseStaMldLinks(raw) {
     const links = [];
     const lines = raw ? raw.split('\n') : [];
+
+    function parseLinkBlock(link, startIdx) {
+        for (let j = startIdx; j < lines.length && j < startIdx + 14; j++) {
+            if (lines[j].match(/Link\s+\d+\s+BSSID/i)) break;
+            const fm = lines[j].match(/freq:\s+(\d+)/);
+            if (fm) { link.freq = parseInt(fm[1]); link.channel = freqToChannel(link.freq); }
+            const bwm = lines[j].match(/width:\s+(\d+)\s+MHz/);
+            if (bwm) { link.bw_mhz = parseInt(bwm[1]); continue; }
+            if (!link.bw_mhz && /bitrate:/i.test(lines[j])) {
+                const bwRate = lines[j].match(/(\d+)MHz\s+(?:EHT|HE|VHT|HT)/i);
+                if (bwRate) link.bw_mhz = parseInt(bwRate[1]);
+            }
+            const txm = lines[j].match(/tx power:\s+(\d+(?:\.\d+)?)/i);
+            if (txm) link.txpower = Math.round(parseFloat(txm[1]));
+            const sigm = lines[j].match(/signal:\s*([-\d]+)\s*dBm/i);
+            if (sigm) link.signal = parseInt(sigm[1]);
+        }
+    }
+
+    // Multi-link format: "Link N BSSID xx:xx:..."
     for (let i = 0; i < lines.length; i++) {
         const lm = lines[i].match(/Link\s+(\d+)\s+BSSID\s+(\S+)/i);
         if (!lm) continue;
-        const link = { link_id: parseInt(lm[1]), bssid: lm[2], freq: null, channel: null, bw_mhz: null, txpower: null };
-        for (let j = i + 1; j < lines.length && j < i + 6; j++) {
-            if (lines[j].match(/Link\s+\d+\s+BSSID/i)) break;
-            const fm = lines[j].match(/freq:\s+(\d+)/);
-            if (fm) link.freq = parseInt(fm[1]);
-            const bwm = lines[j].match(/width:\s+(\d+)\s+MHz/);
-            if (bwm) link.bw_mhz = parseInt(bwm[1]);
-            const txm = lines[j].match(/tx power:\s+(\d+(?:\.\d+)?)/i);
-            if (txm) link.txpower = Math.round(parseFloat(txm[1]));
-        }
+        const link = { link_id: parseInt(lm[1]), bssid: lm[2], freq: null, channel: null, bw_mhz: null, txpower: null, signal: null };
+        parseLinkBlock(link, i + 1);
         links.push(link);
     }
+
+    // Single-link fallback: "Connected to xx:xx:... (on sta-mld0)"
+    if (links.length === 0) {
+        const cm = (lines[0] || '').match(/Connected to\s+(\S+)\s+\(on/i);
+        if (cm) {
+            const link = { link_id: 0, bssid: cm[1], freq: null, channel: null, bw_mhz: null, txpower: null, signal: null };
+            parseLinkBlock(link, 1);
+            links.push(link);
+        }
+    }
+
     return links;
+}
+
+async function uplink_scan_all() {
+    const radios = ['radio0', 'radio1', 'radio2'];
+    const results = await Promise.all(radios.map(r => uplink_scan(r).catch(() => l2ok([]))));
+    const seen = new Set();
+    const combined = [].concat(...results.map(r => r.data || []))
+        .filter(bss => { const k = bss.bssid; return seen.has(k) ? false : (seen.add(k), true); })
+        .sort((a, b) => (b.quality - a.quality) || (a.channel - b.channel));
+    return l2ok(combined);
 }
 
 async function uplink_scan(radio_id) {
@@ -1074,6 +1131,30 @@ async function uplink_get_status(ifname) {
         if (m) signal = parseInt(m[1]);
     }
 
+    const is_mlo = !!wp.ap_mld_addr;
+    let links = [];
+    if (is_mlo) {
+        links = parseStaMldLinks(linkRaw);
+        if (dumpRes.ok && dumpRes.data.length) {
+            const staLinks = dumpRes.data[0].links || {};
+            links = links.map(lk => {
+                const sd = staLinks[lk.link_id];
+                if (!sd) return lk;
+                const sigStr = sd['signal'] || '';
+                const sigM   = sigStr.match(/(-?\d+)\s*\[/) || sigStr.match(/^(-?\d+)/);
+                const txStr  = sd['tx bitrate'] || '';
+                const rxStr  = sd['rx bitrate'] || '';
+                const bwM    = txStr.match(/(\d+)MHz/) || rxStr.match(/(\d+)MHz/);
+                return Object.assign({}, lk, {
+                    signal:     sigM ? parseInt(sigM[1]) : null,
+                    tx_bitrate: txStr || null,
+                    rx_bitrate: rxStr || null,
+                    bw_mhz:     lk.bw_mhz || (bwM ? parseInt(bwM[1]) : null)
+                });
+            });
+        }
+    }
+
     return l2ok({
         wpa_state:       wp.wpa_state    || 'DISCONNECTED',
         ssid:            wp.ssid         || null,
@@ -1084,7 +1165,8 @@ async function uplink_get_status(ifname) {
         tx_bitrate:      parseBitrate(linkRaw, 'tx'),
         rx_bitrate:      parseBitrate(linkRaw, 'rx'),
         ip_address:      wp.ip_address   || null,
-        channel_width:   wp.channel_width ? parseInt(wp.channel_width) : null
+        channel_width:   wp.channel_width ? parseInt(wp.channel_width) : null,
+        links
     });
 }
 
@@ -1246,6 +1328,10 @@ async function relayd_remove() {
     return layer1.relayd_remove();
 }
 
+async function fw_wan_add_network(name) {
+    return layer1.fw_wan_add_network(name);
+}
+
 async function repeater_fw_remove() {
     return layer1.fw_wan_remove_network('wwan');
 }
@@ -1275,11 +1361,15 @@ const Layer2 = {
     // clients
     clients_get_all, clients_get_by_iface, clients_deauth,
     // uplink
-    uplink_get_all, uplink_scan, uplink_connect, uplink_disconnect, uplink_get_status,
+    uplink_get_all, uplink_scan, uplink_scan_all, uplink_connect, uplink_disconnect, uplink_get_status,
     // system
     system_get_info, system_apply, system_apply_poll, system_all_up, system_get_logs, system_get_txpower_info,
     // relayd
-    relayd_setup, relayd_remove, relayd_get, repeater_fw_remove
+    relayd_setup, relayd_remove, relayd_get, fw_wan_add_network, repeater_fw_remove,
+    // passthrough
+    iface_stats:      layer1.iface_stats,
+    wireless_backup:  layer1.wireless_backup,
+    wireless_restore: layer1.wireless_restore
 };
 
 return baseclass.extend(Layer2);

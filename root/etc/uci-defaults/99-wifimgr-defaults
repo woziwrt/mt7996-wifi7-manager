@@ -1,19 +1,37 @@
 #!/bin/sh
 
-# Set country to CZ on all radios
+# Guard: only run once. /etc/config is preserved across sysupgrade,
+# so this sentinel survives firmware upgrades — re-running would overwrite
+# user-configured passwords, encryption and country settings.
+[ "$(uci -q get wifimgr.defaults.applied)" = '1' ] && exit 0
+
+# Set country to CZ on all radios (factory default: unset or WORLD)
 uci set wireless.radio0.country='CZ'
 uci set wireless.radio1.country='CZ'
 uci set wireless.radio2.country='CZ'
 
-# Set default password + encryption and rename MT76_AP_MLD on all wifi interfaces
+# On factory interfaces only: set default password + encryption + rename SSID.
+# Factory SSIDs are MT76_AP_MLD and OpenWrt (or OpenWrt-Nxxxx).
 for iface in $(uci show wireless | grep '=wifi-iface' | cut -d'.' -f2 | cut -d'=' -f1); do
-    uci set wireless.${iface}.key='12345678'
-    # radio2 (6G standalone) requires sae-only; MLO and 2G/5G use sae-mixed
-    radio=$(uci -q get wireless.${iface}.device)
-    [ "$radio" = 'radio2' ] && enc='sae' || enc='sae-mixed'
-    uci set wireless.${iface}.encryption="$enc"
     ssid=$(uci -q get wireless.${iface}.ssid)
-    [ "$ssid" = 'MT76_AP_MLD' ] && uci set wireless.${iface}.ssid='OpenWrt-MLD'
+    case "$ssid" in
+        MT76_AP_MLD|OpenWrt|OpenWrt-*)
+            uci set wireless.${iface}.key='12345678'
+            radio=$(uci -q get wireless.${iface}.device)
+            [ "$radio" = 'radio2' ] && enc='sae' || enc='sae-mixed'
+            uci set wireless.${iface}.encryption="$enc"
+            [ "$ssid" = 'MT76_AP_MLD' ] && uci set wireless.${iface}.ssid='OpenWrt-MLD'
+            ;;
+    esac
 done
 
 uci commit wireless
+
+# Ensure br-lan has a proper /24 netmask (factory default may leave it as /32)
+uci set network.lan.netmask='255.255.255.0'
+uci commit network
+
+# Mark as applied — stored in /etc/config/wifimgr (preserved across sysupgrade)
+uci set wifimgr.defaults=config
+uci set wifimgr.defaults.applied=1
+uci commit wifimgr

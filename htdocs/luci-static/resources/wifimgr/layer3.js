@@ -49,11 +49,7 @@ async function load_diag() {
     return {
         sysinfo: sysinfoRes.ok ? sysinfoRes.data : null,
         logs:    logsRes,
-        txpower: [
-            tp0 && tp0.ok ? tp0.data : null,
-            tp1 && tp1.ok ? tp1.data : null,
-            tp2 && tp2.ok ? tp2.data : null
-        ]
+        txpower: [tp0, tp1, tp2]
     };
 }
 
@@ -92,10 +88,18 @@ async function wizard_ap(radio_id, params) {
     const write = Object.assign({ encryption: enc }, params);
     delete write.radio_id;
 
+    // If this radio is part of an MLO AP, wifi reload would crash (EDCCA).
+    // Write UCI and reboot instead.
+    const mldsRes = await layer2.mld_get_all();
+    const mlds = (mldsRes && mldsRes.ok !== false) ? (Array.isArray(mldsRes) ? mldsRes : (mldsRes.data || [])) : [];
+    const isMloRadio = mlds.some(function(m) {
+        return m.mode === 'ap' && Array.isArray(m.radios) && m.radios.indexOf(radio_id) !== -1;
+    });
+
     const res = await layer2.iface_add(radio_id, 'ap', write);
     if (!res.ok) return { ok: false, sid: null, restartRequired: 'none', errors: res.errors || [] };
 
-    return { ok: true, sid: res.sid, restartRequired: 'wifi', errors: [] };
+    return { ok: true, sid: res.sid, restartRequired: isMloRadio ? 'reboot' : 'wifi', errors: [] };
 }
 
 // Wizard: MLO setup (multi-radio AP).
@@ -117,7 +121,7 @@ async function wizard_mlo(radio_ids, params) {
 // Returns { ok, sid, restartRequired, errors }.
 async function wizard_sta(radio_id, params) {
     const isMlo = params.mlo === '1' || params.mlo === true;
-    const enc  = params.encryption || (isMlo ? 'sae-mixed' : 'psk2');
+    const enc  = params.encryption || (isMlo ? 'sae' : 'psk2');
 
     if (isMlo) {
         // MLO STA: multi-radio, mld_assoc_band mandatory
@@ -172,7 +176,7 @@ async function wizard_repeater(uplink_radio_id, ap_radio_id, uplink_params, ap_p
         restartRequired: 'none', errors: apRes.errors || [] };
 
     // Add wwan to firewall wan zone so masquerade applies (L3 NAT for repeater clients)
-    await layer1.fw_wan_add_network('wwan');
+    await layer2.fw_wan_add_network('wwan');
 
     return { ok: true, sta_sid: staRes.sid, ap_sid: apRes.sid,
         restartRequired: 'wifi', errors: [] };
