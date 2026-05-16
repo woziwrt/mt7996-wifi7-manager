@@ -35,7 +35,7 @@ Download the latest APK from the [Releases](https://github.com/woziwrt/mt7996-wi
 
 ```sh
 # Copy APK to router
-scp luci-app-wifimgr-1.1.0-r20260511.apk root@192.168.1.1:/tmp/
+scp luci-app-wifimgr-2.0.0-r20260516.apk root@192.168.1.1:/tmp/
 
 # Install (no internet required)
 ssh root@192.168.1.1 'apk add --allow-untrusted --no-network /tmp/luci-app-wifimgr-*.apk'
@@ -116,15 +116,55 @@ All hardware write operations are serialized through an `hwBusy` mutex in layer1
 
 ---
 
+## Supported network combinations
+
+The BPI-R4 has three radios (radio0 = 2.4 GHz, radio1 = 5 GHz, radio2 = 6 GHz) all on a single MT7996 chip. Supported combinations per router:
+
+| Combination | Supported | Notes |
+|-------------|-----------|-------|
+| MLO AP (2+3 bands) | ✅ | Default setup. Requires reboot to apply. |
+| MLO AP + legacy AP per radio | ✅ | Max 1 additional AP per MLO radio. Requires reboot. |
+| Multiple legacy APs (no MLO) | ✅ | Standard MBSSID, wifi reload OK. |
+| STA uplink on 2.4G or 5G | ✅ | Coexists with AP on same radio. |
+| MLO STA (multi-band client) | ✅ | Connects to upstream MLO AP on all three bands. |
+| Repeater (STA + local AP) | ✅ | STA and AP **must be on different radios**. L3 NAT. |
+| WDS bridge | ✅ | 4-address mode on radio0 or radio1. |
+| L2 relayd (ARP proxy) | ✅ | STA on radio0 or radio1 only. |
+| STA uplink on 6G (non-MLO) | ❌ | Driver limitation — see below. |
+| MLO AP + MLO STA simultaneously | ❌ | Same radios cannot be both AP-MLD and STA-MLD. |
+| Repeater with same radio for STA and AP | ❌ | Blocked by wizard. |
+
+---
+
 ## Known limitations
 
 | Limitation | Details |
 |------------|---------|
-| **6G STA (non-MLO)** | Not supported. MT7996 driver always routes band2 through the MLD code path — standalone 6G STA scan returns no results. 6G is accessible via MLO STA only. |
-| **MLO AP + MLO STA simultaneously** | Running both on the same three radios crashes the MT7996 driver. The wizard blocks this combination with an inline error. |
-| **Per-link RSSI on secondary MLO links** | MT7996 driver reports signal only for the primary data link. Secondary links show `—`. |
-| **6G channel utilization** | Always reported as `n/a` — driver bug (`mbssid=1` causes hostapd to report 126%). Filtered in layer2. |
-| **wifi reload with new AP on MLO radio** | Adding a 3rd MBSSID to an MLO radio via `wifi reload` triggers an EDCCA crash. wizardMLO always reboots to work around this. |
+| **6G STA (non-MLO)** | Not supported. The MT7996 driver always routes band2 (6G) through the MLD code path — a standalone 6G STA scan returns no results. 6G uplink is only accessible via MLO STA mode. |
+| **MLO AP + MLO STA simultaneously** | Cannot run both on the same router — they share the same three radios. The wizard blocks this with an inline error. |
+| **MLO radio AP limit** | Each radio participating in an MLO group can have at most 1 additional legacy AP. Adding a second one via `wifi reload` triggers an EDCCA crash in the MT7996 driver (see below). The wizard enforces this limit and always reboots when adding an AP to an MLO radio. |
+| **Per-link RSSI on secondary MLO links** | MT7996 driver reports signal only for the primary data link. Secondary links show `—`. Driver limitation, not fixable in software. |
+| **6G channel utilization** | Always reported as `n/a` — driver bug: `mbssid=1` causes hostapd to report 126% utilization. Discarded in layer2. |
+| **Repeater radio constraint** | The STA (uplink) and local AP must use different radios. Using the same radio for both is blocked by the wizard. |
+
+---
+
+## Recovery: WiFi completely dead after adding a network
+
+If all WiFi interfaces disappear and nothing comes back after reboot or power cycle, the MT7996 MCU has likely entered a stuck state due to an EDCCA driver crash.
+
+**Symptom:** `dmesg` shows:
+```
+mt7996e: Failed to start patch
+mt7996e: Failed to release patch semaphore
+mt7996e: probe with driver mt7996e failed with error -11
+```
+
+**Cause:** The MT7996 chip contains an internal MCU with a hardware semaphore register. An EDCCA crash (triggered by adding too many interfaces to an MLO radio via `wifi reload`) can leave this register stuck. The state survives soft reboots and short power cycles because on-board capacitors keep the chip powered for several seconds after shutdown.
+
+**Fix:** Disconnect the router from power for **at least 15 minutes**. This fully discharges the board capacitors and resets all MCU hardware registers. WiFi will initialize normally on the next boot.
+
+> The wizard now prevents the conditions that cause this crash. If you configure networks exclusively through WiFi Manager, you should never encounter this issue.
 
 ---
 
@@ -135,6 +175,47 @@ All hardware write operations are serialized through an `hwBusy` mutex in layer1
 - LuCI installed
 
 Not compatible with mainline OpenWrt due to differences in interface naming (`ap-mld-*`), MLD UCI configuration, and hostapd vendor extensions.
+
+---
+
+## Changelog
+
+### v2.0.0 (2026-05-16)
+
+**New features**
+
+- **Channel advisor** — "Scan channels" button in each radio card. Scans nearby APs and survey noise, computes interference-weighted score, and recommends top 3 channels as color-coded buttons (green/yellow/red). Click to apply immediately.
+- **Scan in wizards** — Station, WDS, and Repeater wizards now have a live scan button that lists nearby networks. Selecting one auto-fills SSID and encryption.
+- **All-band nearby scan** — Diagnostics "Nearby Networks" now scans all three bands simultaneously via `uplink_scan_all()` instead of a single radio.
+- **Version badge** — UI header shows current package version.
+
+**Safety / crash protection**
+
+- **EDCCA crash prevention in wizardAP** — Radios that are part of an MLO group and already have one legacy AP are disabled in the selector ("— at limit") and show a blocking error. Prevents a class of MT7996 driver crash that requires 15+ minutes of power-off to recover from.
+- **EDCCA crash prevention in wizardMLO** — Link toggle buttons for radios already in an existing MLO group are disabled. Shows blocking error if fewer than 2 radios are available.
+- **MLO radio always reboots** — wizard_ap() detects if the target radio is part of an MLO group and triggers a reboot instead of `wifi reload`, eliminating the risk of EDCCA crash even if the UI guard is bypassed.
+
+**Bug fixes**
+
+- Fixed misleading "DFS scan in progress" message shown on 2.4G interfaces (which have no DFS).
+- Fixed TX power display in Radios tab — manual mode now shows the configured UCI value instead of the driver-reported regulatory maximum.
+- Fixed scan interface selection — channel advisor and uplink scan now correctly derive the phy interface from radio_id instead of always using `phy0.0-ap0`.
+
+---
+
+### v1.1.1 (2026-05-14)
+
+- Sysupgrade to OpenWrt 99211b26fb (kernel 6.12.x, MTK SDK May 2026)
+- First-run UCI defaults (country=CZ, renamed default SSID)
+- Hotplug TX power fix for MT7996 cold-boot TMAC=0 bug on band0/band2
+
+### v1.0.0 (2026-05-10)
+
+- Initial public release
+- All wizards: MLO AP, legacy AP, Station (incl. MLO STA), WDS, relayd, Repeater, Country
+- Networks / Radios / Clients / Diagnostics tabs
+- TX power modes: Regulatory / eFuse max / Manual
+- Channel utilization, noise, thermal, MLO internals in Diagnostics
 
 ---
 
