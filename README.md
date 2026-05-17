@@ -67,9 +67,13 @@ This saves your current `/etc/config/wireless` as a file. After upgrading, use t
 |---------|-------------|
 | ![Clients tab](screenshots/clients-tab.png) | ![Diagnostics tab](screenshots/diagnostics-tab.png) |
 
-| MLO Wizard | Station Wizard | WDS / Bridge Wizard |
-|------------|----------------|---------------------|
-| ![wizardMLO](screenshots/wizard-mlo.png) | ![wizardStation](screenshots/wizard-station.png) | ![wizardWDS](screenshots/wizard-wds.png) |
+| Station Wizard | MLO Wizard blocked | AP Wizard blocked |
+|----------------|-------------------|-------------------|
+| ![wizardStation](screenshots/wizard-station.png) | ![wizardMLO blocked](screenshots/wizard-mlo-blocked.png) | ![wizardAP blocked](screenshots/wizard-ap-blocked.png) |
+
+| WDS / Bridge blocked | Repeater blocked |
+|----------------------|-----------------|
+| ![wizardWDS blocked](screenshots/wizard-wds-blocked.png) | ![wizardRepeater blocked](screenshots/wizard-repeater-blocked.png) |
 
 ---
 
