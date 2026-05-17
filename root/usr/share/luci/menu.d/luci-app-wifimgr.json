@@ -9,16 +9,5 @@
         "depends": {
             "acl": [ "luci-mod-network-wifimgr" ]
         }
-    },
-    "admin/network/wifimgr/tests": {
-        "title": "Wizard Tests",
-        "order": 99,
-        "action": {
-            "type": "view",
-            "path": "wifimgr/tests"
-        },
-        "depends": {
-            "acl": [ "luci-mod-network-wifimgr" ]
-        }
     }
 }
