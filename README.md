@@ -35,13 +35,25 @@ Download the latest APK from the [Releases](https://github.com/woziwrt/mt7996-wi
 
 ```sh
 # Copy APK to router
-scp luci-app-wifimgr-2.0.0-r20260516.apk root@192.168.1.1:/tmp/
+scp luci-app-wifimgr-2.0.0-r20260517.apk root@192.168.1.1:/tmp/
 
 # Install (no internet required)
 ssh root@192.168.1.1 'apk add --allow-untrusted --no-network /tmp/luci-app-wifimgr-*.apk'
 ```
 
 Then open LuCI → **Network → WiFi Manager**.
+
+---
+
+## Before upgrading — back up your WiFi config
+
+Before any sysupgrade or APK reinstall, export your wireless configuration from the **Diagnostics** tab:
+
+**Network → WiFi Manager → Diagnostics → Wireless Backup / Restore → Download backup**
+
+This saves your current `/etc/config/wireless` as a file. After upgrading, use the same tab to restore it — networks come back exactly as configured, without manual reconfiguration.
+
+> UCI config normally survives an APK reinstall (`apk del` + `apk add`) without a backup. For sysupgrade, the backup is essential — the wireless config is wiped along with the rest of the overlay filesystem.
 
 ---
 
