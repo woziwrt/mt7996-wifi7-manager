@@ -5,10 +5,14 @@
 # user-configured passwords, encryption and country settings.
 [ "$(uci -q get wifimgr.defaults.applied)" = '1' ] && exit 0
 
-# Set country to CZ on all radios (factory default: unset or WORLD)
-uci set wireless.radio0.country='CZ'
-uci set wireless.radio1.country='CZ'
-uci set wireless.radio2.country='CZ'
+# Set country to CZ only if still at factory default (unset, WORLD, or 00).
+# Skip if already configured — preserves country on upgrades from older versions.
+_cur=$(uci -q get wireless.radio0.country)
+if [ -z "$_cur" ] || [ "$_cur" = "WORLD" ] || [ "$_cur" = "00" ]; then
+    uci set wireless.radio0.country='CZ'
+    uci set wireless.radio1.country='CZ'
+    uci set wireless.radio2.country='CZ'
+fi
 
 # On factory interfaces only: set default password + encryption + rename SSID.
 # Factory SSIDs are MT76_AP_MLD and OpenWrt (or OpenWrt-Nxxxx).
