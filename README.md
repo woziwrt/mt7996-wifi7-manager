@@ -120,6 +120,78 @@ Firmware version, CPU and WiFi chip temperatures, per-radio channel utilization 
 
 ---
 
+### Link Policy tab (MLO AP only)
+
+Available only when an MLO AP is configured. Provides live visibility into the MLO link steering daemon (`mlo-steerd`) and full manual override.
+
+**Daemon control** — start / stop the daemon. Status dot shows running state and PID.
+
+**Steering override** — three-button selector:
+
+| Mode | Behavior |
+|------|----------|
+| **Auto** | Weighted algorithm runs continuously (default) |
+| **All links ON** | Forces all three bands active, disables steering |
+| **5G only** | Forces 5G, disables 2.4G and 6G via A-TTLM |
+
+The override is written to UCI (`mlo-steerd.global.mode`) and picked up by the daemon on the next poll cycle — no restart needed.
+
+**Link status** — noise floor per band (dBm), read live from `iw survey`.
+
+**MLO clients table** — live list of connected MLO clients:
+
+- **EMLSR** (e.g. iPhone) — single-radio, switches between links. `max_simul_links = 1`.
+- **MLMR** (e.g. router in MLO STA mode) — simultaneous multi-link. `max_simul_links > 1`.
+
+Per-link signal shown for each client. For MLMR clients, the active **Neg-TTLM** mapping is displayed (per AC: BK / BE / VI / VO → active links).
+
+**Daemon log** — last 25 lines of `/tmp/steerd.log`, auto-scrolled to bottom.
+
+---
+
+### How MLO steering works
+
+`mlo-steerd` is a shell daemon running on the AP router, polling every 10 seconds and making two types of decisions:
+
+#### 1. Band steering — which links to activate (SET_ATTLM)
+
+The AP can temporarily disable one or more links for all clients using the `SET_ATTLM` hostapd command. The daemon uses a **weighted score** to decide whether to disable or re-enable each link:
+
+```
+score = SNR_normalized × 60%  +  (100 − tx_retries%) × 30%  +  (100 − channel_busy%) × 10%
+```
+
+SNR is normalized over the link's soft zone (`[SNR_HARD_LOW .. SNR_HARD_HIGH]`), so a score of 10000 means perfect conditions and 0 means unusable.
+
+**Decision logic per link:**
+
+| Condition | Action |
+|-----------|--------|
+| SNR < hard_low (2 dB for 6G, 0 dB for 5G) | Immediate disable |
+| SNR > hard_high AND retries < 15% | Immediate enable |
+| score < 4000 | Disable |
+| score > 6000 | Enable |
+| 4000 ≤ score ≤ 6000 | No change (hysteresis band) |
+
+Links are evaluated in priority order: 6G first, then 5G only if 6G is already disabled — the client is never left with no link. A 30-second cooldown prevents rapid toggling.
+
+#### 2. Traffic steering — which traffic goes on which link (Neg-TTLM)
+
+When all links are up and an MLMR client is connected, the daemon sends a **Negotiated TID-to-Link Mapping** request, directing different traffic classes to the most appropriate bands:
+
+| Access Category | TIDs | Links | Rationale |
+|----------------|------|-------|-----------|
+| Background (BK) | 1, 2 | 2.4G + 5G | Bulk traffic — spare 6G capacity for latency-sensitive flows |
+| Best Effort (BE) | 0, 3 | All links | General traffic — use full available capacity |
+| Video (VI) | 4, 5 | 5G + 6G | High throughput, low latency — skip congested 2.4G |
+| Voice (VO) | 6, 7 | 5G only | Minimum latency — stable mid-band, no 6G range risk |
+
+This mapping is hardware-verified on BPI-R4 / MT7996 (2026-05-27). EMLSR clients (e.g. iPhone) do not support Neg-TTLM — band steering only.
+
+The two mechanisms work together: SET_ATTLM shifts clients between bands; Neg-TTLM optimizes traffic distribution when multiple bands are available simultaneously. The daemon is open-source, ships with the package, and autostarted via procd with respawn.
+
+---
+
 ## Architecture
 
 Three-layer JavaScript architecture running inside LuCI's rpcd/ubus sandbox:
@@ -236,6 +308,17 @@ Not compatible with mainline OpenWrt due to differences in interface naming (`ap
 ---
 
 ## Changelog
+
+### v3.0.0 (2026-05-28)
+
+**New: Link Policy tab — MLO band steering + traffic steering**
+
+- **`mlo-steerd` daemon** — open-source MLO link steering daemon, deployed to `/root/mlo-steerd.sh`, autostarted via procd with respawn on crash.
+- **Band steering (SET_ATTLM)** — weighted algorithm (SNR 60% + tx_retries 30% + channel_busy 10%) with hard SNR gates and 30-second cooldown. Disables underperforming links via AP-side A-TTLM; re-enables when conditions improve.
+- **Traffic steering (Neg-TTLM)** — for MLMR clients, maps traffic classes (VO/VI/BE/BK) to optimal links. Voice → 5G only; Video → 5G+6G; BE → all links; BK → 2.4G+5G. Hardware-verified on MT7996.
+- **Manual override** — three-button selector in UI: Auto / All links ON / 5G only. Written to UCI, no daemon restart needed.
+- **Live dashboard** — noise floor per band, per-client EMLSR/MLMR type, per-link signal, active Neg-TTLM mapping per AC, daemon log (last 25 lines).
+- **EMLSR support** — correctly detects single-radio clients (iPhone); applies band steering only, skips Neg-TTLM.
 
 ### v2.0.0 (2026-05-16)
 

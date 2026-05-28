@@ -99,7 +99,7 @@ async function wizard_ap(radio_id, params) {
     const res = await layer2.iface_add(radio_id, 'ap', write);
     if (!res.ok) return { ok: false, sid: null, restartRequired: 'none', errors: res.errors || [] };
 
-    return { ok: true, sid: res.sid, restartRequired: isMloRadio ? 'reboot' : 'wifi', errors: [] };
+    return { ok: true, sid: res.sid, restartRequired: 'reboot', errors: [] };
 }
 
 // Wizard: MLO setup (multi-radio AP).
@@ -128,14 +128,14 @@ async function wizard_sta(radio_id, params) {
         const mloParams = Object.assign({}, params, { encryption: enc, mlo: true });
         const res = await layer2.uplink_connect(radio_id, mloParams);
         if (!res.ok) return { ok: false, sid: null, restartRequired: 'none', errors: res.errors || [] };
-        return { ok: true, sid: res.sid, restartRequired: 'wifi', errors: [] };
+        return { ok: true, sid: res.sid, restartRequired: 'reboot', errors: [] };
     }
 
     // Legacy STA: single-radio
     const write = Object.assign({ encryption: enc, network: params.network || 'wwan' }, params);
     const res = await layer2.iface_add(radio_id, 'sta', write);
     if (!res.ok) return { ok: false, sid: null, restartRequired: 'none', errors: res.errors || [] };
-    return { ok: true, sid: res.sid, restartRequired: 'wifi', errors: [] };
+    return { ok: true, sid: res.sid, restartRequired: 'reboot', errors: [] };
 }
 
 // Wizard: relayd bridge (STA uplink on wwan, relay_bridge bridges wwan↔lan).
@@ -153,7 +153,7 @@ async function wizard_relayd(radio_id, params) {
         return { ok: false, sid: null, restartRequired: 'none', errors: ['relayd_setup failed'] };
     }
 
-    return { ok: true, sid: staRes.sid, restartRequired: 'wifi', errors: [] };
+    return { ok: true, sid: staRes.sid, restartRequired: 'reboot', errors: [] };
 }
 
 // Wizard: Repeater (STA uplink + local AP on separate radio).
@@ -179,7 +179,7 @@ async function wizard_repeater(uplink_radio_id, ap_radio_id, uplink_params, ap_p
     await layer2.fw_wan_add_network('wwan');
 
     return { ok: true, sta_sid: staRes.sid, ap_sid: apRes.sid,
-        restartRequired: 'wifi', errors: [] };
+        restartRequired: 'reboot', errors: [] };
 }
 
 // Wizard: Country / Regulatory change.
@@ -198,12 +198,50 @@ async function wizard_country(country) {
     return { ok: true, restartRequired: 'reboot', errors: [] };
 }
 
+// --- STEERD ---
+
+async function load_steerd(clients) {
+    const [statusRes, noiseRes, modeRes] = await Promise.all([
+        layer2.steerd_get_status(),
+        layer2.iw_survey_noise(),
+        layer2.steerd_get_mode()
+    ]);
+    const sd = statusRes.ok
+        ? statusRes.data
+        : { running: false, pid: null, log: [], script_present: false };
+    const noise = noiseRes.ok ? noiseRes.data : {};
+    const mode = modeRes.ok ? modeRes.data : 'auto';
+
+    // Fetch Neg-TTLM for each MLMR client (max_simul_links > 1) in parallel
+    const mlmrClients = (clients || []).filter(function(c) { return c.is_mld && c.max_simul_links > 1; });
+    const neg_ttlm = {};
+    await Promise.all(mlmrClients.map(async function(c) {
+        const res = await layer2.hostapd_get_neg_ttlm('ap-mld-1', c.mac);
+        neg_ttlm[c.mac] = res.ok ? res.data : { active: false, tids: [] };
+    }));
+
+    return Object.assign({}, sd, { noise, neg_ttlm, mode });
+}
+
+async function steerd_start() {
+    return layer2.steerd_start();
+}
+
+async function steerd_stop() {
+    return layer2.steerd_stop();
+}
+
+async function steerd_set_mode(mode) {
+    return layer2.steerd_set_mode(mode);
+}
+
 // --- MODULE EXPORT ---
 
 const Layer3 = {
     load_all, load_diag, load_channels, scan,
     start_apply, poll_apply,
-    wizard_ap, wizard_mlo, wizard_sta, wizard_relayd, wizard_repeater, wizard_country
+    wizard_ap, wizard_mlo, wizard_sta, wizard_relayd, wizard_repeater, wizard_country,
+    load_steerd, steerd_start, steerd_stop, steerd_set_mode
 };
 
 return baseclass.extend(Layer3);

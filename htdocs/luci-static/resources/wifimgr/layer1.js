@@ -535,14 +535,22 @@ async function iw_dev() {
 }
 
 // Returns noise floor (dBm) keyed by frequency (MHz) for all active channels.
-// One interface is enough — survey dump reports all active freqs on the shared phy.
+// Tries common AP interface names; one is enough — survey reports all active freqs on the shared phy.
 async function iw_survey_noise() {
     try {
-        const res = await fs.exec('/usr/sbin/iw', ['dev', 'phy0.0-ap0', 'survey', 'dump']);
-        if (res.code !== 0) return mkErr('exec_failed');
+        const candidates = ['phy0.0-ap0', 'phy0.1-ap0', 'phy0.2-ap0'];
+        let stdout = null;
+        for (const iface of candidates) {
+            const res = await fs.exec('/usr/sbin/iw', ['dev', iface, 'survey', 'dump']);
+            if (res.code === 0 && (res.stdout || '').includes('[in use]')) {
+                stdout = res.stdout;
+                break;
+            }
+        }
+        if (!stdout) return mkErr('exec_failed');
         const result = {};
         let curFreq = null;
-        for (const line of res.stdout.split('\n')) {
+        for (const line of stdout.split('\n')) {
             const fm = line.match(/frequency:\s*(\d+)\s*MHz.*\[in use\]/);
             if (fm) { curFreq = parseInt(fm[1]); continue; }
             if (curFreq) {
@@ -961,6 +969,87 @@ async function wireless_restore(content) {
     }
 }
 
+// --- GROUP 8: mlo-steerd daemon control ---
+
+// Returns Neg-TTLM TID mapping for a given client MAC from hostapd.
+// { active: bool, tids: [ { tid, uplink, downlink } ] }
+async function hostapd_get_neg_ttlm(ifname, mac) {
+    try {
+        const res = await fs.exec('/usr/sbin/hostapd_cli', ['-i', ifname, 'get_neg_ttlm', mac]);
+        if (res.code !== 0) return mkErr('exec_failed');
+        const text = res.stdout || '';
+        if (!text.includes('TID')) return ok({ active: false, tids: [] });
+        const tids = [];
+        for (const line of text.split('\n')) {
+            const m = line.match(/TID\s+(\d+):\s+(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)/);
+            if (m) tids.push({ tid: parseInt(m[1]), uplink: parseInt(m[2], 16), downlink: parseInt(m[3], 16) });
+        }
+        return ok({ active: tids.length > 0, tids });
+    } catch(e) {
+        return mkErr('exec_failed');
+    }
+}
+
+async function steerd_status() {
+    try {
+        const [pidRes, logRes, scriptRes] = await Promise.all([
+            fs.exec('/bin/sh', ['-c', 'pgrep -f mlo-steerd | head -1']),
+            fs.exec('/bin/sh', ['-c', 'tail -25 /tmp/steerd.log 2>/dev/null || true']),
+            fs.exec('/bin/sh', ['-c', 'test -f /root/mlo-steerd.sh && echo yes || echo no'])
+        ]);
+        const pid = (pidRes.stdout || '').trim();
+        return ok({
+            running:         pid !== '',
+            pid:             pid ? parseInt(pid) : null,
+            log:             (logRes.stdout || '').trim().split('\n').filter(Boolean),
+            script_present:  (scriptRes.stdout || '').trim() === 'yes'
+        });
+    } catch(e) {
+        return mkErr('exec_failed');
+    }
+}
+
+async function steerd_start() {
+    try {
+        const res = await fs.exec('/bin/sh', ['-c',
+            '(sh /root/mlo-steerd.sh </dev/null >/tmp/steerd.log 2>&1 &); sleep 1; pgrep -f mlo-steerd >/dev/null'
+        ]);
+        return res.code === 0 ? ok(null) : mkErr('start_failed');
+    } catch(e) {
+        return mkErr('exec_failed');
+    }
+}
+
+async function steerd_stop() {
+    try {
+        await fs.exec('/bin/sh', ['-c', 'kill $(pgrep -f mlo-steerd) 2>/dev/null; true']);
+        return ok(null);
+    } catch(e) {
+        return mkErr('exec_failed');
+    }
+}
+
+async function steerd_get_mode() {
+    try {
+        const res = await fs.exec('/sbin/uci', ['-q', 'get', 'mlo-steerd.global.mode']);
+        const mode = (res.stdout || '').trim();
+        return ok(mode || 'auto');
+    } catch(e) {
+        return ok('auto');
+    }
+}
+
+async function steerd_set_mode(mode) {
+    try {
+        const res = await fs.exec('/bin/sh', ['-c',
+            `/sbin/uci set 'mlo-steerd.global.mode=${mode}' && /sbin/uci commit mlo-steerd`
+        ]);
+        return res.code === 0 ? ok(null) : mkErr('uci_failed');
+    } catch(e) {
+        return mkErr('exec_failed');
+    }
+}
+
 // --- Module export ---
 
 const Layer1 = {
@@ -1020,7 +1109,14 @@ const Layer1 = {
     system_logs,
     system_exec,
     wireless_backup,
-    wireless_restore
+    wireless_restore,
+    // GROUP 8: mlo-steerd
+    hostapd_get_neg_ttlm,
+    steerd_status,
+    steerd_start,
+    steerd_stop,
+    steerd_get_mode,
+    steerd_set_mode
 };
 
 return baseclass.extend(Layer1);

@@ -3,6 +3,7 @@
 'require poll';
 'require wifimgr/layer2 as layer2';
 'require wifimgr/layer3 as layer3';
+'require wifimgr/linkpolicy as linkpolicy';
 
 // ── BAND METADATA ────────────────────────────────────────────────────────────
 
@@ -51,6 +52,7 @@ var _pendingTxMode  = null; // user-selected TX mode not yet saved to UCI — su
 var _signalHistory  = {}; // ifname → Array<number|null> ring buffer (last 20 samples)
 var _utilHistory    = {}; // radio_id → Array<number|null> ring buffer (last 20 samples)
 var _tpBufs        = {}; // radio_id → { rx:[], tx:[], prev:null } — survives poll re-renders
+var _steerdData    = null; // cached steerd status { running, pid, log[] }
 var _rssiMloBufs   = {}; // ifname → { link_id: Array<number|null> } — per-link RSSI history
 
 // ── STATIC TAB LIST ───────────────────────────────────────────────────────────
@@ -60,7 +62,8 @@ var TAB_DEFS = [
     { id: 'networks',    label: 'Networks' },
     { id: 'radios',      label: 'Radios' },
     { id: 'clients',     label: 'Clients' },
-    { id: 'diagnostics', label: 'Diagnostics' }
+    { id: 'diagnostics', label: 'Diagnostics' },
+    { id: 'link-policy', label: 'Link Policy' }
 ];
 
 // ── DOM HELPERS ───────────────────────────────────────────────────────────────
@@ -1686,7 +1689,7 @@ function netRow(type, iface, data, cliCount, country, isLast) {
             var prom = is_mld ? layer2.mld_remove(sid) : layer2.iface_remove(sid);
             if (isRelaydUplink) prom = prom.then(function() { return layer2.relayd_remove(); });
             if (isRepeaterSta) prom = prom.then(function() { return layer2.repeater_fw_remove(); });
-            return prom.then(function(r) { return Object.assign({ restartRequired: 'wifi' }, r); });
+            return prom.then(function(r) { return Object.assign({ restartRequired: 'reboot' }, r); });
         }, _onApplied);
     });
     removeBtn.style.cssText += ';padding:3px 8px;font-size:12px;flex-shrink:0';
@@ -1946,7 +1949,7 @@ function netRow(type, iface, data, cliCount, country, isLast) {
                 var prom = is_mld ? layer2.mld_remove(sid) : layer2.iface_remove(sid);
                 if (isRelaydUplink) prom = prom.then(function() { return layer2.relayd_remove(); });
                 if (isRepeaterSta) prom = prom.then(function() { return layer2.repeater_fw_remove(); });
-                return prom.then(function(r) { return Object.assign({ restartRequired: 'wifi' }, r); });
+                return prom.then(function(r) { return Object.assign({ restartRequired: 'reboot' }, r); });
             }, _onApplied);
         }));
         b.appendChild(btnBar);
@@ -2034,10 +2037,10 @@ function netRow(type, iface, data, cliCount, country, isLast) {
                     var rp = { channel: apChIn.value.trim() || 'auto', htmode: apHtIn.value };
                     return layer2.radio_set(apRadio.id, rp).then(function(rr) {
                         if (!rr.ok) return Object.assign({ restartRequired: 'none' }, rr);
-                        return ifaceProm.then(function(r) { return Object.assign({ restartRequired: r.ok ? 'wifi' : 'none' }, r); });
+                        return ifaceProm.then(function(r) { return Object.assign({ restartRequired: r.ok ? 'reboot' : 'none' }, r); });
                     });
                 }
-                return ifaceProm.then(function(r) { return Object.assign({ restartRequired: r.ok ? 'wifi' : 'none' }, r); });
+                return ifaceProm.then(function(r) { return Object.assign({ restartRequired: r.ok ? 'reboot' : 'none' }, r); });
             }, function() { editMode = false; delete _netExpandState[sid]; if (_onApplied) _onApplied(); });
         });
         b.appendChild(node('div', { style: 'display:flex;gap:8px;margin-top:10px' },
@@ -2066,7 +2069,7 @@ function netRow(type, iface, data, cliCount, country, isLast) {
             applyFlow(applyDiv, function() {
                 var prom = is_mld ? layer2.mld_remove(sid) : layer2.iface_remove(sid);
                 return prom.then(function(r) {
-                    return Object.assign({ restartRequired: 'wifi' }, r);
+                    return Object.assign({ restartRequired: 'reboot' }, r);
                 });
             }, function() {
                 if (_onApplied) _onApplied();
@@ -2252,19 +2255,18 @@ function renderRadios(data) {
         manual:    'Manual: enter dBm limits in the radio cards below, then click Apply here — mode and limits are saved in one step.'
     };
     var modeHintEl = sp(modeHints[curTxMode] || '', 'color:#555;font-size:11px;margin-bottom:8px;display:block');
-    var applyTxBtn = btn(curTxMode === 'manual' && !_pendingTxMode ? 'Apply' : 'Apply & Reboot', null, function() {
+    var applyTxBtn = btn('Apply & Reboot', null, function() {
         applyFlow(sysApplyDiv, function() {
             var mode = txModeSel.value;
             var modeChanged = mode !== curTxMode;
             if (!modeChanged && mode === 'manual') {
-                // Only dBm values changed — wifi reload is enough, no reboot needed
                 var txPromises = radioTxInputs
                     .filter(function(item) { return item.txIn.value.trim(); })
                     .map(function(item) { return layer2.radio_set(item.rid, { txpower: item.txIn.value.trim() }); });
-                if (!txPromises.length) return Promise.resolve({ ok: true, restartRequired: 'wifi', errors: [] });
+                if (!txPromises.length) return Promise.resolve({ ok: true, restartRequired: 'reboot', errors: [] });
                 return Promise.all(txPromises).then(function() {
                     _pendingTxMode = null;
-                    return { ok: true, restartRequired: 'wifi', errors: [] };
+                    return { ok: true, restartRequired: 'reboot', errors: [] };
                 });
             }
             return layer2.system_set_txpower_mode(mode).then(function(modeRes) {
@@ -2285,7 +2287,7 @@ function renderRadios(data) {
         var isManual = sel === 'manual';
         el.querySelectorAll('.txpower-manual-row').forEach(function(row) { row.style.display = isManual ? '' : 'none'; });
         modeHintEl.textContent = modeHints[sel] || '';
-        applyTxBtn.textContent = (!_pendingTxMode && curTxMode === 'manual') ? 'Apply' : 'Apply & Reboot';
+        applyTxBtn.textContent = 'Apply & Reboot';
     };
     el.appendChild(card(node('div', {},
         node('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:10px' },
@@ -2845,12 +2847,20 @@ function renderDiagnostics(diag) {
 
 // tabDefs replaced by static TAB_DEFS constant defined in module state section
 
+function loadSteerd() {
+    layer3.load_steerd(_data ? _data.clients : []).then(function(d) {
+        _steerdData = d;
+        if (_tab === 'link-policy') refreshTab('link-policy');
+    });
+}
+
 function renderTab(id, data) {
     switch (id) {
         case 'networks':    return renderNetworks(data);
         case 'radios':      return renderRadios(data);
         case 'clients':     return renderClients(data);
         case 'diagnostics': return renderDiagnostics(_diag);
+        case 'link-policy': return linkpolicy.render(_steerdData, data, loadSteerd);
     }
     return node('div', {});
 }
@@ -2869,7 +2879,10 @@ function activateTab(id) {
 }
 
 function refreshNav(data) {
-    // All tabs are always visible with the static tab list
+    var hasMloAp = ((data && data.mlds) || []).some(function(m) { return m.mode === 'ap'; });
+    var lpBtn = _tabNavBtns['link-policy'];
+    if (lpBtn) lpBtn.style.display = hasMloAp ? '' : 'none';
+    if (_tab === 'link-policy' && !hasMloAp) activateTab('networks');
     if (!TAB_DEFS.some(function(t) { return t.id === _tab; })) activateTab('networks');
 }
 
@@ -2961,6 +2974,7 @@ return view.extend({
                     (Date.now() - _lastFormTouch < 15000);
                 if (!editing) refreshTab(_tab);
                 if (_tab === 'diagnostics' && (_diagTs === 0 || Date.now() - _diagTs > 30000)) loadDiag();
+                if (_tab === 'link-policy') loadSteerd();
             });
         }, 10);
 
