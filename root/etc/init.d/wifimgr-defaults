@@ -1,0 +1,70 @@
+#!/bin/sh /etc/rc.common
+# WiFi Manager first-boot defaults: country + factory SSID password/encryption.
+#
+# Why an init.d and not /etc/uci-defaults:
+# uci-defaults run very early, BEFORE config_generate has created
+# /etc/config/wireless from the detected radios. At that point there are no
+# wifi-iface sections to secure, so the old uci-defaults approach left 2.4/5 GHz
+# open and the country at the kernel regdb default (US). This service runs late
+# (START=99), after the wireless config exists, so it patches it deterministically
+# on the very first boot - same result every time, on any board (no hardcoded
+# PCIe paths, works on both the standard BPI-R4 and the Pro 8X).
+
+START=99
+
+boot() {
+	# Run once. The sentinel lives in /etc/config/wifimgr, which is preserved
+	# across sysupgrade, so a user's later country/password choices are never
+	# overwritten on upgrade.
+	[ "$(uci -q get wifimgr.defaults.applied)" = '1' ] && return 0
+
+	# Wait for config_generate to produce the wireless interfaces. If they never
+	# appear (driver problem), bail WITHOUT marking applied so we retry next boot
+	# instead of locking in an insecure/empty config.
+	i=0
+	while ! uci -q show wireless 2>/dev/null | grep -q '=wifi-iface'; do
+		i=$((i + 1))
+		[ "$i" -gt 30 ] && break
+		sleep 1
+	done
+	uci -q show wireless 2>/dev/null | grep -q '=wifi-iface' || return 0
+
+	# Country: factory default is US (kernel regdb). Force CZ on this first run.
+	# Safe to set unconditionally - the applied sentinel below stops this service
+	# from ever running again, so an upgraded device keeps the user's country.
+	uci set wireless.radio0.country='CZ'
+	uci set wireless.radio1.country='CZ'
+	uci set wireless.radio2.country='CZ'
+
+	# On factory interfaces only: set default password + encryption + rename SSID.
+	# Factory SSIDs are MT76_AP_MLD and OpenWrt (or OpenWrt-Nxxxx / OpenWrt-2g...).
+	for iface in $(uci show wireless | grep '=wifi-iface' | cut -d'.' -f2 | cut -d'=' -f1); do
+		ssid=$(uci -q get wireless.${iface}.ssid)
+		case "$ssid" in
+			MT76_AP_MLD|OpenWrt|OpenWrt-*)
+				uci set wireless.${iface}.key='12345678'
+				radio=$(uci -q get wireless.${iface}.device)
+				[ "$radio" = 'radio2' ] && enc='sae' || enc='sae-mixed'
+				uci set wireless.${iface}.encryption="$enc"
+				[ "$ssid" = 'MT76_AP_MLD' ] && uci set wireless.${iface}.ssid='OpenWrt-MLD'
+				;;
+		esac
+	done
+	uci commit wireless
+
+	# Ensure br-lan has a proper /24 netmask (factory default may leave it /32).
+	uci set network.lan.netmask='255.255.255.0'
+	uci commit network
+
+	# Mark as applied. The wifimgr config file must exist before a section can be
+	# created in it - "uci set wifimgr.defaults=config" fails with "Entry not
+	# found" otherwise, which is what kept this from ever completing before.
+	touch /etc/config/wifimgr
+	uci set wifimgr.defaults=config
+	uci set wifimgr.defaults.applied=1
+	uci commit wifimgr
+
+	# Apply the secured config and stop running on subsequent boots.
+	wifi reload >/dev/null 2>&1 &
+	/etc/init.d/wifimgr-defaults disable
+}

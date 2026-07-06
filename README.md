@@ -363,4 +363,4 @@ Not compatible with mainline OpenWrt due to differences in interface naming (`ap
 
 ## License
 
-MIT
+GPL-2.0-or-later — see [LICENSE](LICENSE). Copyright (c) 2026 Petr Wozniak.

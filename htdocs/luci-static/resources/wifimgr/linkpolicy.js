@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (c) 2026 Petr Wozniak <petr.wozniak@gmail.com>
+
 'use strict';
 'require baseclass';
 'require wifimgr/layer3 as layer3';

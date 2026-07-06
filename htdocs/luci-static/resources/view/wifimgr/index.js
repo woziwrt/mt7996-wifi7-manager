@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (c) 2026 Petr Wozniak <petr.wozniak@gmail.com>
+
 'use strict';
 'require view';
 'require poll';
@@ -2933,7 +2936,7 @@ return view.extend({
         // ── Top bar ──
         var topBar = node('div', { style: 'padding:8px 0 12px;display:flex;align-items:baseline;justify-content:space-between' });
         topBar.appendChild(sp('WiFi Manager', 'color:#ddd;font-weight:bold;font-size:15px'));
-        topBar.appendChild(sp('v2.0.0', 'color:#444;font-size:11px'));
+        topBar.appendChild(sp('v@@PKG_VERSION@@', 'color:#444;font-size:11px'));
 
         // ── Tab nav ──
         var tabNav = node('div', { style: 'display:flex;border-bottom:1px solid #1a2a3a;margin-bottom:16px;overflow-x:auto' });
